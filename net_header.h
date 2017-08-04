@@ -11,8 +11,11 @@ typedef uint64_t	u_int64_t;
 #endif
 
 typedef unsigned char	BYTE;
+typedef char		byte;
 typedef unsigned short	WORD;
+typedef short		word;
 typedef unsigned int	DWORD;
+typedef int		dword;
 
 /* ethernet addresses are 6 octets long */
 #ifndef ETHER_ADDR_LEN
@@ -28,6 +31,10 @@ typedef unsigned int	DWORD;
 #define ERRBUF_SIZE      0x100
 
 #define ETHER_ADDRSTRLEN 0x12
+
+#ifndef IP_ADDRSTRLEN
+#define IP_ADDRSTRLEN	    0x10
+#endif
 //////////////////////////////////////////////////////////////////////////
 
 /**
@@ -274,6 +281,17 @@ struct libnet_udp_hdr
     u_int16_t uh_sum;         /* checksum */
 };
 
+/*
+ *  Addr List
+ *  Address List Node
+ *  size : 0x2a
+ */
+
+typedef struct _addr_list
+{
+    u_int8_t		    mac[ETHER_ADDRSTRLEN];
+    u_int8_t		    ip[INET_ADDRSTRLEN];
+} addr_list, *p_addr_list;
 
 #endif  /* __HEADERS_H */
 
