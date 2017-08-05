@@ -209,6 +209,7 @@ packet_relay (
     while(1) {
 	puts("MITM...");
 	if(pcap_next_ex(handle, (struct pcap_pkthdr **)&header, &packet) == 1) {
+	    dumpcode(packet, 0x50);
 	    packet_ptr = packet;
 
 	    if(((pether_hdr)packet_ptr)->ether_type == htons(ETHERTYPE_IP)) {
