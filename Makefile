@@ -4,7 +4,7 @@ OBJECT = main.o
 SRC = main.c
  
 CC = gcc
-CFLAGS = -lpcap -W -Wall
+CFLAGS = -lpcap -lpthread -W -Wall
 
 TARGET = arp
  

