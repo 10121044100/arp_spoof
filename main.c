@@ -181,8 +181,7 @@ arp_infection (
 
 	pthread_cond_signal(&gcond);
 	pthread_mutex_unlock(&gmutex);
-
-	sleep(3);
+	sleep(1);
     }
 }
 
@@ -254,7 +253,6 @@ packet_relay (
 		}
 	    }
 	}
-	pthread_cond_signal(&gcond);
 	pthread_mutex_unlock(&gmutex);
     }
 
