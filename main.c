@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <netinet/ether.h>		/* for ether_aton() */
+#include <netinet/ip_icmp.h>		/* for icmp */
 #include <netinet/in.h>
 #include <net/if.h>
 #include <netdb.h>
@@ -208,6 +209,8 @@ packet_relay (
     const u_char *packet_ptr;		    /* packet pointer */
     DWORD total_len;			    /* packet's total length */
     DWORD header_len;			    /* packet's header(ethernet, ip, tcp) len */
+    DWORD seq_num = 0;			    /* icmp echo sequence number */
+    DWORD dupl_chk = 0;			    /* duplicates check */
 
     if(pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
 	fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(handle));
@@ -231,6 +234,7 @@ packet_relay (
 		if(((pipv4_hdr)packet_ptr)->ip_p == IPPROTO_ICMP) {
 		    total_len = Packet_Len(packet_ptr);
 		    header_len += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
+		    packet_ptr += ((((pipv4_hdr)packet_ptr)->ip_hl)*4);
 
 		    if(!memcmp(
 			    (BYTE*)(ether_aton((byte*)s_al->mac)), 
@@ -248,8 +252,15 @@ packet_relay (
 		    }
 
 		    dumpcode((BYTE*)packet, total_len);
-		    if(pcap_sendpacket(handle, (BYTE*)packet, total_len)<0)
-			puts("Failed...");
+		    if(seq_num <= ((struct icmp*)packet_ptr)->icmp_seq) {
+			seq_num = ((struct icmp*)packet_ptr)->icmp_seq;
+			dupl_chk++;
+		    }
+
+		    if((dupl_chk <= 2) && (seq_num == ((struct icmp*)packet_ptr)->icmp_seq)) {
+			if(pcap_sendpacket(handle, (BYTE*)packet, total_len)<0)
+			    puts("Failed...");
+		    } else dupl_chk = 0;
 		}
 	    }
 	}
